@@ -1,0 +1,149 @@
+{
+  "id": "email-validation",
+  "name": "Email Validation Pipeline",
+  "version": 1,
+  "start_node_id": "validate_email",
+  "nodes": {
+    "validate_email": {
+      "id": "validate_email",
+      "type": "third_party",
+      "label": "Validate Email",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"email": "{{context.email}}"},
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {"status": 200, "body": {"valid": true}}
+      },
+      "next": "email_valid"
+    },
+    "email_valid": {
+      "id": "email_valid",
+      "type": "branch",
+      "label": "Email Valid?",
+      "edges": [
+        {
+          "label": "yes",
+          "condition": {
+            "field": "nodes.validate_email.response.valid",
+            "operator": "equals",
+            "value": true
+          },
+          "next": "check_ip"
+        },
+        {
+          "label": "no",
+          "condition": {
+            "field": "nodes.validate_email.response.valid",
+            "operator": "equals",
+            "value": false
+          },
+          "next": "end_rejected"
+        }
+      ]
+    },
+    "check_ip": {
+      "id": "check_ip",
+      "type": "third_party",
+      "label": "Check IP Risk",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"ip": "{{context.ip}}"},
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {"status": 200, "body": {"risk_score": "low"}}
+      },
+      "next": "risk_level"
+    },
+    "risk_level": {
+      "id": "risk_level",
+      "type": "branch",
+      "label": "Risk Level?",
+      "edges": [
+        {
+          "label": "low",
+          "condition": {
+            "field": "nodes.check_ip.response.risk_score",
+            "operator": "equals",
+            "value": "low"
+          },
+          "next": "send_welcome"
+        },
+        {
+          "label": "medium",
+          "condition": {
+            "field": "nodes.check_ip.response.risk_score",
+            "operator": "equals",
+            "value": "medium"
+          },
+          "next": "trigger_sms"
+        },
+        {
+          "label": "high",
+          "condition": {
+            "field": "nodes.check_ip.response.risk_score",
+            "operator": "equals",
+            "value": "high"
+          },
+          "next": "log_security"
+        }
+      ]
+    },
+    "send_welcome": {
+      "id": "send_welcome",
+      "type": "third_party",
+      "label": "Send Welcome Email",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"to": "{{context.email}}", "template": "welcome"},
+        "mock": {"status": 200, "body": {"sent": true}}
+      },
+      "next": "end_success"
+    },
+    "trigger_sms": {
+      "id": "trigger_sms",
+      "type": "third_party",
+      "label": "Trigger SMS Verification",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"phone": "{{context.phone}}"},
+        "mock": {"status": 200, "body": {"sms_sent": true}}
+      },
+      "next": "end_pending"
+    },
+    "log_security": {
+      "id": "log_security",
+      "type": "third_party",
+      "label": "Log Security Event",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"event": "high_risk_signup", "email": "{{context.email}}"},
+        "mock": {"status": 200, "body": {"logged": true}}
+      },
+      "next": "end_blocked"
+    },
+    "end_success": {
+      "id": "end_success",
+      "type": "end",
+      "label": "Signup Successful"
+    },
+    "end_pending": {
+      "id": "end_pending",
+      "type": "end",
+      "label": "Pending SMS Verification"
+    },
+    "end_blocked": {
+      "id": "end_blocked",
+      "type": "end",
+      "label": "Blocked — High Risk"
+    },
+    "end_rejected": {
+      "id": "end_rejected",
+      "type": "end",
+      "label": "Rejected — Invalid Email"
+    }
+  }
+}

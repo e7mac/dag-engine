@@ -1,0 +1,67 @@
+{
+  "id": "order-fulfillment",
+  "name": "Order Fulfillment",
+  "version": 1,
+  "start_node_id": "check_inventory",
+  "nodes": {
+    "check_inventory": {
+      "id": "check_inventory",
+      "type": "third_party",
+      "label": "Check Inventory",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "body": {"sku": "{{context.sku}}"},
+        "retry": {"max_attempts": 3, "backoff_ms": 500},
+        "mock": {"status": 200, "body": {"in_stock": true}}
+      },
+      "next": "branch_in_stock"
+    },
+    "branch_in_stock": {
+      "id": "branch_in_stock",
+      "type": "branch",
+      "label": "In Stock?",
+      "edges": [
+        {
+          "label": "yes",
+          "condition": {
+            "field": "nodes.check_inventory.response.in_stock",
+            "operator": "equals",
+            "value": true
+          },
+          "next": "create_shipment"
+        },
+        {
+          "label": "no",
+          "condition": {
+            "field": "nodes.check_inventory.response.in_stock",
+            "operator": "equals",
+            "value": false
+          },
+          "next": "end_cancelled"
+        }
+      ]
+    },
+    "create_shipment": {
+      "id": "create_shipment",
+      "type": "third_party",
+      "label": "Create Shipment",
+      "config": {
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "mock": {"status": 200, "body": {"shipment_id": "SHP-123"}}
+      },
+      "next": "end_success"
+    },
+    "end_success": {
+      "id": "end_success",
+      "type": "end",
+      "label": "Order Fulfilled"
+    },
+    "end_cancelled": {
+      "id": "end_cancelled",
+      "type": "end",
+      "label": "Cancelled"
+    }
+  }
+}
