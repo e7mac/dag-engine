@@ -1,6 +1,6 @@
 # DAG Workflow Engine
 
-An async DAG workflow engine in Python for orchestrating third-party API calls with branching logic, retry with exponential backoff, and a REST API.
+An async DAG workflow engine in Python for orchestrating third-party API calls with branching logic, concurrent path execution, retry with exponential backoff, and a web dashboard.
 
 ## Setup
 
@@ -15,14 +15,17 @@ uvicorn src.main:app --reload
 pytest tests/ -v
 ```
 
+Open `http://localhost:8000` for the dashboard.
+
 ## Architecture
 
 ```
 src/
 ├── types.py                 # Pydantic models: WorkflowDef, NodeDef, WorkflowRun, etc.
+├── main.py                  # Entrypoint — uvicorn on :8000
 ├── engine/
 │   ├── executor.py          # Core DAG walker — executes workflows from start to end
-│   ├── scheduler.py         # Path analysis utilities for concurrent execution
+│   ├── scheduler.py         # Static graph analysis (successor/path tracing)
 │   ├── retry.py             # Generic async retry with exponential backoff
 │   └── nodes/
 │       ├── base.py          # Dot-notation resolver + {{context.x}} template engine
@@ -32,8 +35,10 @@ src/
 │   └── dag_validator.py     # Pre-execution DAG validation (cycles, reachability, termination)
 ├── store/
 │   └── run_store.py         # In-memory run storage + optional JSON file persistence
-└── api/
-    └── server.py            # FastAPI REST API
+├── api/
+│   └── server.py            # FastAPI REST API + metrics + stats
+└── static/
+    └── index.html           # Single-file web dashboard (all CSS/JS inlined)
 ```
 
 ### How it works
@@ -42,7 +47,7 @@ src/
 2. **Validate** the DAG — checks for cycles, unreachable nodes, dead ends, and non-terminating paths
 3. **Execute** — the engine walks from `start_node_id`, dispatching each node:
    - **third_party**: makes an HTTP call (or returns mock data in sandbox mode), writes response to `context["nodes"][node_id]["response"]`
-   - **branch**: evaluates conditions against context, picks the first matching edge
+   - **branch**: evaluates conditions against context. First-match by default; with `concurrent: true`, runs all matching edges simultaneously via `asyncio.gather`
    - **end**: terminates the path
 4. **Retry** — failed HTTP calls retry with exponential backoff (`backoff_ms * 2^(attempt-1)`)
 5. **Context** — a shared dict threaded through all nodes; templates like `{{context.sku}}` resolve at execution time
@@ -52,86 +57,166 @@ src/
 | Type | Description |
 |------|-------------|
 | `third_party` | HTTP call via httpx. Supports GET/POST/PUT/PATCH/DELETE, timeout, retry config, and mock responses. |
-| `branch` | Evaluates edges in order using operators: `equals`, `contains`, `gt`, `lt`, `exists`. Falls back to `default_next`. |
+| `branch` | Evaluates edges in order using operators: `equals`, `contains`, `gt`, `lt`, `exists`. Falls back to `default_next`. Set `concurrent: true` to run all matching edges in parallel. |
 | `end` | Terminal node. Marks the path as complete. |
+
+### Concurrent branches
+
+Branch nodes support an opt-in `concurrent` flag. When `concurrent: true`, all matching edges run their downstream paths simultaneously instead of taking only the first match.
+
+```json
+{
+  "id": "notify_branch",
+  "type": "branch",
+  "label": "Fan Out Notifications",
+  "concurrent": true,
+  "edges": [
+    { "label": "email", "condition": { "field": "nodes.fetch_user.response.email", "operator": "exists" }, "next": "send_email" },
+    { "label": "sms",   "condition": { "field": "nodes.fetch_user.response.phone", "operator": "exists" }, "next": "send_sms" },
+    { "label": "push",  "condition": { "field": "nodes.fetch_user.response.website", "operator": "exists" }, "next": "send_push" }
+  ]
+}
+```
+
+Concurrency details:
+- An `asyncio.Lock` protects shared state (`node_runs`, `execution_path`) so converging paths don't duplicate execution
+- HTTP I/O happens outside the lock so paths actually run in parallel
+- If only one edge matches, it runs sequentially (no unnecessary concurrency)
+- All paths run to completion — a failure in one path doesn't cancel others
+- `branch_taken` shows comma-separated labels (e.g. `"email,sms,push"`)
+
+### Template engine
+
+URLs and request bodies support `{{context.path}}` placeholders:
+
+```json
+{
+  "url": "https://api.example.com/users/{{context.user_id}}",
+  "body": { "key": "{{context.api_key}}" }
+}
+```
+
+- Dot-path resolution traverses nested dicts and lists (e.g. `nodes.fetch.response.items.0.id`)
+- Full-string placeholders like `"{{context.count}}"` preserve the original type (int, bool, etc.)
+- Partial-string placeholders stringify: `"Hello {{context.name}}"` → `"Hello Alice"`
+
+### DAG validation
+
+`validate_workflow()` runs 5 checks before every execution:
+
+1. Start node exists in the node map
+2. All `next` / edge targets point to existing node IDs
+3. All nodes are reachable from `start_node_id` (BFS)
+4. No cycles (DFS with gray/white/black coloring)
+5. All paths terminate at an end node (recursive memoized check)
+
+## Dashboard
+
+The web dashboard at `http://localhost:8000` is a single HTML file with no build step. Features:
+
+- **Workflow list** — sidebar showing registered workflows
+- **DAG canvas** — visual graph drawn on `<canvas>` with topological layering; edges highlight blue when taken during a run
+- **Run management** — trigger runs (sandbox or live), view run list with status badges
+- **Execution trace** — vertical timeline per node showing status, duration, start timestamp; expandable details with full input/output/error/timing JSON
+- **Hover highlighting** — hovering a trace node highlights it on the DAG canvas with a blue glow
+- **Example workflows** — 5 built-in examples loadable via buttons (Order Fulfillment, Email Validation, User Lookup, Fault Tolerance, Concurrent Notifications)
+- **Stats panel** — toggleable overlay with run counts, success rates, latency percentiles, per-workflow breakdown
 
 ## Sandbox mode vs Live mode
 
-- **Sandbox mode** (`sandbox_mode: true`): No real HTTP calls. Uses `mock.body` from each node's config. Use for testing workflows.
-- **Live mode** (`sandbox_mode: false`): Makes real HTTP calls via httpx with retry and timeout.
+- **Sandbox** (`sandbox_mode: true`): no real HTTP calls. Uses `mock.body` from each node's config. Use for testing workflows without external dependencies.
+- **Live** (`sandbox_mode: false`): makes real HTTP calls via httpx with retry and timeout.
 
 ## API Reference
 
-### Register a workflow
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/workflows` | Register (or overwrite) a workflow definition |
+| `GET` | `/workflows` | List all registered workflows |
+| `GET` | `/workflows/{id}` | Get a workflow definition |
+| `POST` | `/workflows/{id}/validate` | Run DAG validation |
+| `POST` | `/workflows/{id}/run` | Execute workflow in background |
+| `GET` | `/runs` | List runs (filter with `?workflow_id=`) |
+| `GET` | `/runs/{id}` | Get full run data |
+| `GET` | `/runs/{id}/trace` | Get execution trace with per-node timing |
+| `GET` | `/stats` | Aggregated stats (success rate, latency, per-workflow) |
+| `GET` | `/metrics` | Prometheus-compatible counters |
+| `GET` | `/test/flaky?fail_count=N` | Test endpoint that fails N times then succeeds |
+
+### Examples
+
 ```bash
+# Register a workflow
 curl -X POST http://localhost:8000/workflows \
   -H "Content-Type: application/json" \
   -d @examples/order_fulfillment.json
-```
 
-### Get a workflow
-```bash
-curl http://localhost:8000/workflows/order-fulfillment
-```
-
-### Validate a workflow
-```bash
-curl -X POST http://localhost:8000/workflows/order-fulfillment/validate
-```
-
-### Run a workflow (sandbox)
-```bash
+# Run in sandbox mode
 curl -X POST http://localhost:8000/workflows/order-fulfillment/run \
   -H "Content-Type: application/json" \
   -d '{"initial_context": {"sku": "WIDGET-001"}, "sandbox_mode": true}'
-```
 
-Returns `{"run_id": "..."}`. The workflow executes in the background.
-
-### Poll run status
-```bash
+# Poll run status
 curl http://localhost:8000/runs/<run_id>
-```
 
-### Get execution trace
-```bash
+# Get execution trace
 curl http://localhost:8000/runs/<run_id>/trace
 ```
 
-Returns `execution_path` with per-node timing (`started_at`, `completed_at`, `duration_ms`, `attempts`).
+## Example workflows
 
-### Metrics
-```bash
-curl http://localhost:8000/metrics
-```
-
-Prometheus-compatible counters: `runs_total`, `nodes_succeeded`, `nodes_failed`, `retries_total`.
+| Example | File | Description |
+|---------|------|-------------|
+| Order Fulfillment | `examples/order_fulfillment.json` | Check inventory → branch on stock → create shipment or cancel |
+| Email Validation | `examples/email_validation.json` | Validate email → check IP risk → route by risk level (low/medium/high) |
+| User Lookup | `examples/user_lookup.json` | Fetch user + posts from JSONPlaceholder → branch on activity |
+| Fault Tolerance | `examples/fault_tolerance.json` | Hit a flaky endpoint that fails 2x then recovers (tests retry) |
+| Concurrent Notifications | `examples/concurrent_notifications.json` | Fetch user → fan out to 3 concurrent API calls (posts, albums, todos) via `concurrent: true` branch |
 
 ## Persistence
 
-Set `PERSIST_RUNS=true` to write each completed run to `runs/{run_id}.json`:
+Run data is in-memory by default. Set `PERSIST_RUNS=true` to write each completed run as JSON:
 
 ```bash
 PERSIST_RUNS=true uvicorn src.main:app
+```
+
+Writes to `runs/{run_id}.json`. Note: these are not reloaded on restart (write-only audit log). Workflow definitions are always in-memory and lost on restart.
+
+## Tests
+
+40 tests across 4 files:
+
+| File | Count | Covers |
+|------|-------|--------|
+| `test_branch.py` | 17 | All operators, dot-path resolution, first-match semantics |
+| `test_executor.py` | 10 | Happy path, branching, sandbox mocks, context passing, example workflows, concurrent branches |
+| `test_retry.py` | 6 | Immediate success, retry on Nth attempt, exhaustion, callback, backoff timing |
+| `test_validation.py` | 7 | Missing start node, broken refs, unreachable nodes, cycles, unterminated paths |
+
+```bash
+pytest tests/ -v
 ```
 
 ## Tradeoffs and future work
 
 **What's here:**
 - Fully async execution with httpx
+- Concurrent branch execution via `asyncio.gather` with lock-based deduplication
 - Exponential backoff retry with configurable attempts
 - Template resolution for URLs and request bodies
 - DAG validation (cycles, reachability, termination, dead ends)
 - Sandbox mode for testing without real HTTP calls
+- Web dashboard with DAG visualization, execution traces, and hover highlighting
 - Structured logging with per-node timing
 - Prometheus-compatible metrics endpoint
+- Aggregated stats with per-workflow breakdown
 
 **What you'd add with more time:**
 - **Workflow versioning** — store multiple versions, diff between them, roll back
 - **Persistent DB** — replace in-memory dict with PostgreSQL/SQLite for durable storage
+- **Fan-in / join nodes** — wait for all concurrent paths to complete before continuing
 - **SSE streaming** — stream run status updates instead of polling
 - **Rate limiting** — per-node or per-domain rate limits on third-party calls
-- **Parallel path execution** — detect independent branches after a split and run them via `asyncio.gather`
 - **Webhook callbacks** — notify external systems on run completion/failure
-- **DAG visualization** — generate Mermaid/Graphviz diagrams from workflow definitions
 - **Node-level timeouts** — per-workflow timeout in addition to per-node HTTP timeouts
