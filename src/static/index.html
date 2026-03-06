@@ -339,6 +339,68 @@ label { font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 
   margin: 0;
 }
 
+/* --- Stats Panel --- */
+.stats-panel {
+  grid-column: 1 / -1;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  display: none;
+  animation: fadeIn 0.2s;
+}
+.stats-panel.visible { display: block; }
+.stats-bar {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.stat-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  min-width: 120px;
+}
+.stat-card .stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.stat-card .stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.stat-card .stat-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.stat-value.green { color: var(--green); }
+.stat-value.yellow { color: var(--yellow); }
+.stat-value.red { color: var(--red); }
+.per-wf-table {
+  font-size: 12px;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+.per-wf-table th, .per-wf-table td {
+  padding: 3px 10px 3px 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.per-wf-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+button.stats-toggle.active { background: var(--accent-dim); border-color: var(--accent); }
+
 .toast.error { border-color: var(--red); color: var(--red); }
 .toast.success { border-color: var(--green); color: var(--green); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -351,12 +413,20 @@ label { font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 
   <header>
     <h1><span>DAG</span> Workflow Engine</h1>
     <div class="spacer"></div>
+    <button class="sm stats-toggle" id="stats-toggle" onclick="toggleStats()">Stats</button>
     <button class="sm" onclick="openRegisterModal()">+ Register Workflow</button>
     <button class="sm" onclick="loadExample('order_fulfillment')">Load Order Example</button>
     <button class="sm" onclick="loadExample('email_validation')">Load Email Example</button>
     <button class="sm" onclick="loadExample('user_lookup')">Load User Lookup</button>
     <button class="sm" onclick="loadExample('fault_tolerance')">Load Fault Test</button>
   </header>
+
+  <!-- Stats Panel -->
+  <div class="stats-panel" id="stats-panel">
+    <div class="stats-bar" id="stats-bar">
+      <div style="font-size:12px;color:var(--text-dim)">No stats yet — run a workflow first</div>
+    </div>
+  </div>
 
   <!-- Sidebar -->
   <div class="sidebar">
@@ -720,6 +790,7 @@ function pollRun(runId) {
         pollTimer = null;
         selectRun(runId);
         toast(`Run ${run.status}`, run.status === 'completed' ? 'success' : 'error');
+        if (statsVisible) fetchStats();
       }
     } catch (e) {
       if (attempts > 30) { clearInterval(pollTimer); pollTimer = null; }
@@ -1009,6 +1080,78 @@ window.addEventListener('resize', () => {
     drawDAG(workflows[selectedWorkflowId]);
   }
 });
+
+// --- Stats panel ---
+let statsVisible = false;
+
+function toggleStats() {
+  statsVisible = !statsVisible;
+  const panel = document.getElementById('stats-panel');
+  const btn = document.getElementById('stats-toggle');
+  panel.classList.toggle('visible', statsVisible);
+  btn.classList.toggle('active', statsVisible);
+  if (statsVisible) fetchStats();
+}
+
+async function fetchStats() {
+  try {
+    const data = await api('/stats');
+    renderStats(data);
+  } catch (e) { /* server may not be running */ }
+}
+
+function renderStats(data) {
+  const bar = document.getElementById('stats-bar');
+
+  // Success rate color
+  const rate = data.runs.success_rate;
+  let rateClass = 'green';
+  if (rate < 70) rateClass = 'red';
+  else if (rate < 90) rateClass = 'yellow';
+
+  let html = `
+    <div class="stat-card">
+      <div class="stat-label">Runs</div>
+      <div class="stat-value">${data.totals.runs}</div>
+      <div class="stat-sub">${data.runs.completed} passed / ${data.runs.failed} failed</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Success Rate</div>
+      <div class="stat-value ${rateClass}">${rate.toFixed(1)}%</div>
+      <div class="stat-sub">${data.runs.completed + data.runs.failed} finished</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Latency</div>
+      <div class="stat-value">${data.latency.avg_ms.toFixed(0)}<span style="font-size:12px;font-weight:400">ms</span></div>
+      <div class="stat-sub">p95 ${data.latency.p95_ms.toFixed(0)}ms / max ${data.latency.max_ms.toFixed(0)}ms</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Retries</div>
+      <div class="stat-value">${data.totals.retries}</div>
+      <div class="stat-sub">${data.totals.nodes_succeeded} nodes ok / ${data.totals.nodes_failed} failed</div>
+    </div>`;
+
+  // Per-workflow table
+  const wfKeys = Object.keys(data.per_workflow);
+  if (wfKeys.length > 0) {
+    html += `<div class="stat-card" style="min-width:200px">
+      <div class="stat-label">Per Workflow</div>
+      <table class="per-wf-table">
+        <tr><th>Workflow</th><th>Runs</th><th>Pass</th><th>Avg ms</th></tr>`;
+    wfKeys.forEach(wfId => {
+      const w = data.per_workflow[wfId];
+      html += `<tr>
+        <td>${esc(wfId)}</td>
+        <td>${w.runs}</td>
+        <td>${w.completed}/${w.runs}</td>
+        <td>${w.avg_latency_ms.toFixed(0)}</td>
+      </tr>`;
+    });
+    html += `</table></div>`;
+  }
+
+  bar.innerHTML = html;
+}
 
 // --- Init ---
 fetchWorkflows();

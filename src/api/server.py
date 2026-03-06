@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -226,6 +227,101 @@ async def flaky_endpoint(fail_count: int = 2) -> dict:
     # Success — reset counter for next test
     _flaky_counter[key] = 0
     return {"status": "ok", "message": "Recovered after retries", "failed_attempts": fail_count}
+
+
+# --- Stats endpoint ---
+
+
+def _run_duration_ms(run: WorkflowRun) -> float | None:
+    """Compute duration in ms from started_at / completed_at ISO strings."""
+    if not run.started_at or not run.completed_at:
+        return None
+    try:
+        start = datetime.fromisoformat(run.started_at)
+        end = datetime.fromisoformat(run.completed_at)
+        return (end - start).total_seconds() * 1000
+    except (ValueError, TypeError):
+        return None
+
+
+@app.get("/stats")
+async def stats() -> dict[str, Any]:
+    all_runs = _run_store.list_runs()
+
+    completed = [r for r in all_runs if r.status.value == "completed"]
+    failed = [r for r in all_runs if r.status.value == "failed"]
+    finished = len(completed) + len(failed)
+    success_rate = (len(completed) / finished * 100) if finished > 0 else 0.0
+
+    durations = [d for r in all_runs if (d := _run_duration_ms(r)) is not None]
+    if durations:
+        sorted_d = sorted(durations)
+        p95_idx = int(len(sorted_d) * 0.95)
+        p95_idx = min(p95_idx, len(sorted_d) - 1)
+        latency = {
+            "avg_ms": round(statistics.mean(durations), 2),
+            "min_ms": round(min(durations), 2),
+            "max_ms": round(max(durations), 2),
+            "p95_ms": round(sorted_d[p95_idx], 2),
+        }
+    else:
+        latency = {"avg_ms": 0, "min_ms": 0, "max_ms": 0, "p95_ms": 0}
+
+    # Per-workflow breakdown
+    per_workflow: dict[str, dict[str, Any]] = {}
+    for run in all_runs:
+        wf_id = run.workflow_id
+        if wf_id not in per_workflow:
+            per_workflow[wf_id] = {"runs": 0, "completed": 0, "failed": 0, "durations": []}
+        per_workflow[wf_id]["runs"] += 1
+        if run.status.value == "completed":
+            per_workflow[wf_id]["completed"] += 1
+        elif run.status.value == "failed":
+            per_workflow[wf_id]["failed"] += 1
+        d = _run_duration_ms(run)
+        if d is not None:
+            per_workflow[wf_id]["durations"].append(d)
+
+    per_workflow_out: dict[str, dict[str, Any]] = {}
+    for wf_id, data in per_workflow.items():
+        avg_lat = round(statistics.mean(data["durations"]), 2) if data["durations"] else 0
+        per_workflow_out[wf_id] = {
+            "runs": data["runs"],
+            "completed": data["completed"],
+            "failed": data["failed"],
+            "avg_latency_ms": avg_lat,
+        }
+
+    # Recent runs (last 20, newest first)
+    recent = sorted(all_runs, key=lambda r: r.started_at, reverse=True)[:20]
+    recent_out = []
+    for r in recent:
+        recent_out.append({
+            "run_id": r.run_id,
+            "workflow_id": r.workflow_id,
+            "status": r.status.value,
+            "duration_ms": _run_duration_ms(r),
+            "node_count": len(r.node_runs),
+            "started_at": r.started_at,
+        })
+
+    return {
+        "totals": {
+            "workflows": len(_workflows),
+            "runs": _metrics["runs_total"],
+            "nodes_succeeded": _metrics["nodes_succeeded"],
+            "nodes_failed": _metrics["nodes_failed"],
+            "retries": _metrics["retries_total"],
+        },
+        "runs": {
+            "completed": len(completed),
+            "failed": len(failed),
+            "success_rate": round(success_rate, 1),
+        },
+        "latency": latency,
+        "per_workflow": per_workflow_out,
+        "recent_runs": recent_out,
+    }
 
 
 # --- Metrics endpoint ---
