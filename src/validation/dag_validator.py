@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 from src.types import BranchNodeDef, EndNodeDef, NodeId, ThirdPartyNodeDef, WorkflowDef
 
@@ -54,6 +56,11 @@ def validate_workflow(workflow: WorkflowDef) -> list[str]:
     if not errors:  # Only check if no structural errors so far
         termination_errors = _check_all_paths_terminate(workflow)
         errors.extend(termination_errors)
+
+    # 6. Template references — {{nodes.X.*}} must reference nodes that exist and are upstream
+    if not errors:
+        template_errors = _check_template_references(workflow)
+        errors.extend(template_errors)
 
     return errors
 
@@ -172,4 +179,69 @@ def _check_all_paths_terminate(workflow: WorkflowDef) -> list[str]:
         return False
 
     reaches_end(workflow.start_node_id, set())
+    return errors
+
+
+_NODE_REF_RE = re.compile(r"\{\{\s*(?:context\.)?nodes\.([a-zA-Z0-9_]+)\.")
+
+
+def _find_upstream(workflow: WorkflowDef, target_id: NodeId) -> set[NodeId]:
+    """Find all nodes that are upstream of target_id (can reach it from start without passing through it)."""
+    # BFS from start, but stop at target — everything visited is upstream
+    upstream: set[NodeId] = set()
+    stack = [workflow.start_node_id]
+
+    while stack:
+        node_id = stack.pop()
+        if node_id in upstream:
+            continue
+        if node_id == target_id:
+            continue  # Don't traverse through or include the target itself
+        if node_id not in workflow.nodes:
+            continue
+        upstream.add(node_id)
+
+        node_def = workflow.nodes[node_id]
+        if isinstance(node_def, ThirdPartyNodeDef):
+            stack.append(node_def.next)
+        elif isinstance(node_def, BranchNodeDef):
+            for edge in node_def.edges:
+                stack.append(edge.next)
+            if node_def.default_next:
+                stack.append(node_def.default_next)
+
+    return upstream
+
+
+def _extract_node_refs(config: dict) -> set[str]:
+    """Extract all node IDs referenced via {{nodes.X.*}} templates in a config dict."""
+    raw = json.dumps(config)
+    return set(_NODE_REF_RE.findall(raw))
+
+
+def _check_template_references(workflow: WorkflowDef) -> list[str]:
+    """Check that all {{nodes.X.*}} template references point to upstream nodes."""
+    errors: list[str] = []
+
+    for node_id, node_def in workflow.nodes.items():
+        if not isinstance(node_def, ThirdPartyNodeDef):
+            continue
+
+        config_dict = node_def.config.model_dump()
+        referenced_ids = _extract_node_refs(config_dict)
+
+        for ref_id in referenced_ids:
+            if ref_id not in workflow.nodes:
+                errors.append(
+                    f"Node '{node_id}' references 'nodes.{ref_id}' "
+                    f"but '{ref_id}' does not exist in the workflow"
+                )
+            else:
+                upstream = _find_upstream(workflow, node_id)
+                if ref_id not in upstream:
+                    errors.append(
+                        f"Node '{node_id}' references 'nodes.{ref_id}' "
+                        f"but '{ref_id}' is not upstream of '{node_id}'"
+                    )
+
     return errors

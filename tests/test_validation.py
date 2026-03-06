@@ -204,3 +204,106 @@ def test_valid_branch_workflow():
     )
     errors = validate_workflow(wf)
     assert errors == []
+
+
+def test_valid_upstream_template_reference():
+    """Template referencing an upstream node should pass validation."""
+    wf = WorkflowDef(
+        id="valid-ref",
+        name="Valid Ref",
+        start_node_id="fetch",
+        nodes={
+            "fetch": ThirdPartyNodeDef(
+                id="fetch",
+                type="third_party",
+                label="Fetch",
+                config=ThirdPartyConfig(
+                    url="https://example.com",
+                    method="POST",
+                    mock=MockConfig(status=200, body={"user_id": 1}),
+                ),
+                next="use_fetch",
+            ),
+            "use_fetch": ThirdPartyNodeDef(
+                id="use_fetch",
+                type="third_party",
+                label="Use Fetch",
+                config=ThirdPartyConfig(
+                    url="https://example.com/{{nodes.fetch.response.user_id}}",
+                    method="POST",
+                    mock=MockConfig(status=200, body={}),
+                ),
+                next="end",
+            ),
+            "end": EndNodeDef(id="end", type="end", label="Done"),
+        },
+    )
+    errors = validate_workflow(wf)
+    assert errors == []
+
+
+def test_template_reference_to_nonexistent_node():
+    """Template referencing a node that doesn't exist should fail validation."""
+    wf = WorkflowDef(
+        id="bad-ref",
+        name="Bad Ref",
+        start_node_id="a",
+        nodes={
+            "a": ThirdPartyNodeDef(
+                id="a",
+                type="third_party",
+                label="A",
+                config=ThirdPartyConfig(
+                    url="https://example.com",
+                    method="POST",
+                    body={"val": "{{nodes.ghost.response.data}}"},
+                    mock=MockConfig(status=200, body={}),
+                ),
+                next="end",
+            ),
+            "end": EndNodeDef(id="end", type="end", label="Done"),
+        },
+    )
+    errors = validate_workflow(wf)
+    assert len(errors) == 1
+    assert "ghost" in errors[0]
+    assert "does not exist" in errors[0]
+
+
+def test_template_reference_to_downstream_node():
+    """Template referencing a downstream (not upstream) node should fail validation."""
+    wf = WorkflowDef(
+        id="downstream-ref",
+        name="Downstream Ref",
+        start_node_id="a",
+        nodes={
+            "a": ThirdPartyNodeDef(
+                id="a",
+                type="third_party",
+                label="A",
+                config=ThirdPartyConfig(
+                    url="https://example.com/{{nodes.b.response.value}}",
+                    method="POST",
+                    mock=MockConfig(status=200, body={}),
+                ),
+                next="b",
+            ),
+            "b": ThirdPartyNodeDef(
+                id="b",
+                type="third_party",
+                label="B",
+                config=ThirdPartyConfig(
+                    url="https://example.com",
+                    method="POST",
+                    mock=MockConfig(status=200, body={"value": 42}),
+                ),
+                next="end",
+            ),
+            "end": EndNodeDef(id="end", type="end", label="Done"),
+        },
+    )
+    errors = validate_workflow(wf)
+    assert len(errors) == 1
+    assert "not upstream" in errors[0]
+    assert "'a'" in errors[0]
+    assert "'b'" in errors[0]
