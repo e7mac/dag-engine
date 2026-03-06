@@ -1,0 +1,73 @@
+{
+  "id": "user-lookup",
+  "name": "User Lookup Pipeline",
+  "version": 1,
+  "start_node_id": "fetch_user",
+  "nodes": {
+    "fetch_user": {
+      "id": "fetch_user",
+      "type": "third_party",
+      "label": "Fetch User",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/users/{{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": { "max_attempts": 2, "backoff_ms": 1000 },
+        "mock": {
+          "status": 200,
+          "body": {
+            "id": 1,
+            "name": "Leanne Graham",
+            "company": { "name": "Romaguera-Crona" }
+          }
+        }
+      },
+      "next": "fetch_posts"
+    },
+    "fetch_posts": {
+      "id": "fetch_posts",
+      "type": "third_party",
+      "label": "Fetch User Posts",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/posts?userId={{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": { "max_attempts": 2, "backoff_ms": 1000 },
+        "mock": {
+          "status": 200,
+          "body": [
+            { "id": 1, "title": "Post 1" },
+            { "id": 2, "title": "Post 2" }
+          ]
+        }
+      },
+      "next": "check_activity"
+    },
+    "check_activity": {
+      "id": "check_activity",
+      "type": "branch",
+      "label": "Active User?",
+      "edges": [
+        {
+          "label": "active",
+          "condition": {
+            "field": "nodes.fetch_posts.response.0.id",
+            "operator": "exists"
+          },
+          "next": "end_active"
+        }
+      ],
+      "default_next": "end_inactive"
+    },
+    "end_active": {
+      "id": "end_active",
+      "type": "end",
+      "label": "Active User"
+    },
+    "end_inactive": {
+      "id": "end_inactive",
+      "type": "end",
+      "label": "Inactive User"
+    }
+  }
+}

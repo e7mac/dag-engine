@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.engine.executor import execute_workflow
@@ -15,6 +18,10 @@ from src.validation.dag_validator import validate_workflow
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="DAG Workflow Engine", version="0.1.0")
+
+# --- Static files & root redirect ---
+_static_dir = Path(__file__).resolve().parent.parent / "static"
+app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 # In-memory workflow registry and run store
 _workflows: dict[str, WorkflowDef] = {}
@@ -43,7 +50,20 @@ class ValidationResponse(BaseModel):
     errors: list[str]
 
 
+# --- Root redirect ---
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return FileResponse(str(_static_dir / "index.html"))
+
+
 # --- Workflow endpoints ---
+
+
+@app.get("/workflows")
+async def list_workflows() -> list[WorkflowDef]:
+    return list(_workflows.values())
 
 
 @app.post("/workflows", status_code=201)
@@ -115,6 +135,11 @@ async def run_workflow(
 # --- Run endpoints ---
 
 
+@app.get("/runs")
+async def list_runs(workflow_id: str | None = None) -> list[WorkflowRun]:
+    return _run_store.list_runs(workflow_id)
+
+
 @app.get("/runs/{run_id}")
 async def get_run(run_id: str) -> WorkflowRun:
     run = _run_store.get(run_id)
@@ -174,6 +199,33 @@ async def get_trace(run_id: str) -> TraceResponse:
         execution_path=run.execution_path,
         nodes=nodes,
     )
+
+
+# --- Test endpoints ---
+
+_flaky_counter: dict[str, int] = {}
+
+
+@app.get("/test/flaky")
+async def flaky_endpoint(fail_count: int = 2) -> dict:
+    """Fails the first `fail_count` calls, then succeeds. Resets after success.
+    Use ?fail_count=N to control how many failures before success."""
+    import uuid
+
+    # Track by a simple global counter
+    key = "global"
+    _flaky_counter.setdefault(key, 0)
+    _flaky_counter[key] += 1
+
+    if _flaky_counter[key] <= fail_count:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Simulated failure ({_flaky_counter[key]}/{fail_count})",
+        )
+
+    # Success — reset counter for next test
+    _flaky_counter[key] = 0
+    return {"status": "ok", "message": "Recovered after retries", "failed_attempts": fail_count}
 
 
 # --- Metrics endpoint ---

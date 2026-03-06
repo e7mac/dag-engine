@@ -1,0 +1,51 @@
+{
+  "id": "fault-tolerance-test",
+  "name": "Fault Tolerance Test",
+  "version": 1,
+  "start_node_id": "flaky_call",
+  "nodes": {
+    "flaky_call": {
+      "id": "flaky_call",
+      "type": "third_party",
+      "label": "Flaky API (fails 2x, then OK)",
+      "config": {
+        "url": "http://localhost:8000/test/flaky?fail_count=2",
+        "method": "GET",
+        "timeout_ms": 5000,
+        "retry": { "max_attempts": 3, "backoff_ms": 500 },
+        "mock": {
+          "status": 200,
+          "body": { "status": "ok", "message": "Recovered after retries" }
+        }
+      },
+      "next": "check_result"
+    },
+    "check_result": {
+      "id": "check_result",
+      "type": "branch",
+      "label": "Success?",
+      "edges": [
+        {
+          "label": "recovered",
+          "condition": {
+            "field": "nodes.flaky_call.response.status",
+            "operator": "equals",
+            "value": "ok"
+          },
+          "next": "end_ok"
+        }
+      ],
+      "default_next": "end_fail"
+    },
+    "end_ok": {
+      "id": "end_ok",
+      "type": "end",
+      "label": "Recovered!"
+    },
+    "end_fail": {
+      "id": "end_fail",
+      "type": "end",
+      "label": "Failed After Retries"
+    }
+  }
+}
