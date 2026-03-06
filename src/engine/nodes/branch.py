@@ -72,3 +72,47 @@ def evaluate_branch(
     raise BranchEvaluationError(
         f"No matching edge and no default_next for branch node '{node_def.id}'"
     )
+
+
+def evaluate_branch_all(
+    node_def: BranchNodeDef,
+    context: dict[str, Any],
+) -> list[tuple[NodeId, str]]:
+    """Return all matching (next_node_id, edge_label) pairs."""
+    matches: list[tuple[NodeId, str]] = []
+
+    for edge in node_def.edges:
+        found, field_value = resolve_dot_path_safe(context, edge.condition.field)
+
+        if edge.condition.operator == Operator.EXISTS:
+            if found and field_value is not None:
+                logger.info(
+                    "branch_taken",
+                    extra={"node_id": node_def.id, "edge": edge.label},
+                )
+                matches.append((edge.next, edge.label))
+            continue
+
+        if not found:
+            continue
+
+        if evaluate_condition(field_value, edge.condition.operator, edge.condition.value):
+            logger.info(
+                "branch_taken",
+                extra={"node_id": node_def.id, "edge": edge.label},
+            )
+            matches.append((edge.next, edge.label))
+
+    if matches:
+        return matches
+
+    if node_def.default_next:
+        logger.info(
+            "branch_default",
+            extra={"node_id": node_def.id, "default_next": node_def.default_next},
+        )
+        return [(node_def.default_next, "default")]
+
+    raise BranchEvaluationError(
+        f"No matching edge and no default_next for branch node '{node_def.id}'"
+    )

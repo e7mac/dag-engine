@@ -63,6 +63,7 @@ class BranchNodeDef(BaseModel):
     label: str
     edges: list[BranchEdge]
     default_next: NodeId | None = None
+    concurrent: bool = False
 
 
 class EndNodeDef(BaseModel):

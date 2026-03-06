@@ -1,0 +1,125 @@
+{
+  "id": "concurrent-notifications",
+  "name": "Concurrent Notification Fanout",
+  "version": 1,
+  "start_node_id": "fetch_user",
+  "nodes": {
+    "fetch_user": {
+      "id": "fetch_user",
+      "type": "third_party",
+      "label": "Fetch User",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/users/{{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {
+          "status": 200,
+          "body": {
+            "id": 1,
+            "name": "Leanne Graham",
+            "email": "Sincere@april.biz",
+            "phone": "1-770-736-8031 x56442",
+            "website": "hildegard.org"
+          }
+        }
+      },
+      "next": "notify_branch"
+    },
+    "notify_branch": {
+      "id": "notify_branch",
+      "type": "branch",
+      "label": "Fan Out Notifications",
+      "concurrent": true,
+      "edges": [
+        {
+          "label": "email",
+          "condition": {
+            "field": "nodes.fetch_user.response.email",
+            "operator": "exists"
+          },
+          "next": "fetch_posts"
+        },
+        {
+          "label": "sms",
+          "condition": {
+            "field": "nodes.fetch_user.response.phone",
+            "operator": "exists"
+          },
+          "next": "fetch_albums"
+        },
+        {
+          "label": "push",
+          "condition": {
+            "field": "nodes.fetch_user.response.website",
+            "operator": "exists"
+          },
+          "next": "fetch_todos"
+        }
+      ]
+    },
+    "fetch_posts": {
+      "id": "fetch_posts",
+      "type": "third_party",
+      "label": "Fetch Posts (Email Path)",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/posts?userId={{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {
+          "status": 200,
+          "body": [{"id": 1, "title": "Post 1"}, {"id": 2, "title": "Post 2"}]
+        }
+      },
+      "next": "end_email"
+    },
+    "fetch_albums": {
+      "id": "fetch_albums",
+      "type": "third_party",
+      "label": "Fetch Albums (SMS Path)",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/albums?userId={{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {
+          "status": 200,
+          "body": [{"id": 1, "title": "Album 1"}, {"id": 2, "title": "Album 2"}]
+        }
+      },
+      "next": "end_sms"
+    },
+    "fetch_todos": {
+      "id": "fetch_todos",
+      "type": "third_party",
+      "label": "Fetch Todos (Push Path)",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/todos?userId={{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": {"max_attempts": 2, "backoff_ms": 500},
+        "mock": {
+          "status": 200,
+          "body": [{"id": 1, "title": "Todo 1", "completed": false}]
+        }
+      },
+      "next": "end_push"
+    },
+    "end_email": {
+      "id": "end_email",
+      "type": "end",
+      "label": "Email Sent"
+    },
+    "end_sms": {
+      "id": "end_sms",
+      "type": "end",
+      "label": "SMS Sent"
+    },
+    "end_push": {
+      "id": "end_push",
+      "type": "end",
+      "label": "Push Sent"
+    }
+  }
+}
