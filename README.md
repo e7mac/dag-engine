@@ -1,6 +1,6 @@
 # DAG Workflow Engine
 
-An async DAG workflow engine in Python for orchestrating third-party API calls with branching logic, concurrent path execution, retry with exponential backoff, and a web dashboard.
+An async DAG workflow engine in Python for orchestrating third-party API calls with branching logic, retry with exponential backoff, and a web dashboard.
 
 ## Setup
 
@@ -47,7 +47,7 @@ src/
 2. **Validate** the DAG — checks for cycles, unreachable nodes, dead ends, and non-terminating paths
 3. **Execute** — the engine walks from `start_node_id`, dispatching each node:
    - **third_party**: makes an HTTP call (or returns mock data in sandbox mode), writes response to `context["nodes"][node_id]["response"]`
-   - **branch**: evaluates conditions against context. First-match by default; with `concurrent: true`, runs all matching edges simultaneously via `asyncio.gather`
+   - **branch**: evaluates conditions against context, picks the first matching edge
    - **end**: terminates the path
 4. **Retry** — failed HTTP calls retry with exponential backoff (`backoff_ms * 2^(attempt-1)`)
 5. **Context** — a shared dict threaded through all nodes; templates like `{{context.sku}}` resolve at execution time
@@ -57,33 +57,8 @@ src/
 | Type | Description |
 |------|-------------|
 | `third_party` | HTTP call via httpx. Supports GET/POST/PUT/PATCH/DELETE, timeout, retry config, and mock responses. |
-| `branch` | Evaluates edges in order using operators: `equals`, `contains`, `gt`, `lt`, `exists`. Falls back to `default_next`. Set `concurrent: true` to run all matching edges in parallel. |
+| `branch` | Evaluates edges in order (first match wins) using operators: `equals`, `contains`, `gt`, `lt`, `exists`. Falls back to `default_next`. |
 | `end` | Terminal node. Marks the path as complete. |
-
-### Concurrent branches
-
-Branch nodes support an opt-in `concurrent` flag. When `concurrent: true`, all matching edges run their downstream paths simultaneously instead of taking only the first match.
-
-```json
-{
-  "id": "notify_branch",
-  "type": "branch",
-  "label": "Fan Out Notifications",
-  "concurrent": true,
-  "edges": [
-    { "label": "email", "condition": { "field": "nodes.fetch_user.response.email", "operator": "exists" }, "next": "send_email" },
-    { "label": "sms",   "condition": { "field": "nodes.fetch_user.response.phone", "operator": "exists" }, "next": "send_sms" },
-    { "label": "push",  "condition": { "field": "nodes.fetch_user.response.website", "operator": "exists" }, "next": "send_push" }
-  ]
-}
-```
-
-Concurrency details:
-- An `asyncio.Lock` protects shared state (`node_runs`, `execution_path`) so converging paths don't duplicate execution
-- HTTP I/O happens outside the lock so paths actually run in parallel
-- If only one edge matches, it runs sequentially (no unnecessary concurrency)
-- All paths run to completion — a failure in one path doesn't cancel others
-- `branch_taken` shows comma-separated labels (e.g. `"email,sms,push"`)
 
 ### Template engine
 
@@ -119,7 +94,7 @@ The web dashboard at `http://localhost:8000` is a single HTML file with no build
 - **Run management** — trigger runs (sandbox or live), view run list with status badges
 - **Execution trace** — vertical timeline per node showing status, duration, start timestamp; expandable details with full input/output/error/timing JSON
 - **Hover highlighting** — hovering a trace node highlights it on the DAG canvas with a blue glow
-- **Example workflows** — 5 built-in examples loadable via buttons (Order Fulfillment, Email Validation, User Lookup, Fault Tolerance, Concurrent Notifications)
+- **Example workflows** — 4 built-in examples loadable via buttons (Order Fulfillment, Email Validation, User Lookup, Fault Tolerance)
 - **Stats panel** — toggleable overlay with run counts, success rates, latency percentiles, per-workflow breakdown
 
 ## Sandbox mode vs Live mode
@@ -171,7 +146,6 @@ curl http://localhost:8000/runs/<run_id>/trace
 | Email Validation | `examples/email_validation.json` | Validate email → check IP risk → route by risk level (low/medium/high) |
 | User Lookup | `examples/user_lookup.json` | Fetch user + posts from JSONPlaceholder → branch on activity |
 | Fault Tolerance | `examples/fault_tolerance.json` | Hit a flaky endpoint that fails 2x then recovers (tests retry) |
-| Concurrent Notifications | `examples/concurrent_notifications.json` | Fetch user → fan out to 3 concurrent API calls (posts, albums, todos) via `concurrent: true` branch |
 
 ## Persistence
 
@@ -185,12 +159,12 @@ Writes to `runs/{run_id}.json`. Note: these are not reloaded on restart (write-o
 
 ## Tests
 
-40 tests across 4 files:
+37 tests across 4 files:
 
 | File | Count | Covers |
 |------|-------|--------|
 | `test_branch.py` | 17 | All operators, dot-path resolution, first-match semantics |
-| `test_executor.py` | 10 | Happy path, branching, sandbox mocks, context passing, example workflows, concurrent branches |
+| `test_executor.py` | 7 | Happy path, branching, sandbox mocks, context passing, example workflows |
 | `test_retry.py` | 6 | Immediate success, retry on Nth attempt, exhaustion, callback, backoff timing |
 | `test_validation.py` | 7 | Missing start node, broken refs, unreachable nodes, cycles, unterminated paths |
 
@@ -202,7 +176,6 @@ pytest tests/ -v
 
 **What's here:**
 - Fully async execution with httpx
-- Concurrent branch execution via `asyncio.gather` with lock-based deduplication
 - Exponential backoff retry with configurable attempts
 - Template resolution for URLs and request bodies
 - DAG validation (cycles, reachability, termination, dead ends)
@@ -213,9 +186,10 @@ pytest tests/ -v
 - Aggregated stats with per-workflow breakdown
 
 **What you'd add with more time:**
+- **Fork / fan-out node** — a dedicated node type that runs all matching edges concurrently via `asyncio.gather` (separate from branch, which is first-match routing)
+- **Join / fan-in node** — wait for all concurrent paths to complete before continuing
 - **Workflow versioning** — store multiple versions, diff between them, roll back
 - **Persistent DB** — replace in-memory dict with PostgreSQL/SQLite for durable storage
-- **Fan-in / join nodes** — wait for all concurrent paths to complete before continuing
 - **SSE streaming** — stream run status updates instead of polling
 - **Rate limiting** — per-node or per-domain rate limits on third-party calls
 - **Webhook callbacks** — notify external systems on run completion/failure

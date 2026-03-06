@@ -4,9 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-import respx
-from httpx import Response
-
 from src.engine.executor import execute_workflow
 from src.types import (
     BranchCondition,
@@ -16,7 +13,6 @@ from src.types import (
     MockConfig,
     NodeStatus,
     Operator,
-    RetryConfig,
     RunStatus,
     ThirdPartyConfig,
     ThirdPartyNodeDef,
@@ -235,133 +231,3 @@ async def test_email_validation_example():
     assert run.node_runs["risk_level"].branch_taken == "low"
     assert "send_welcome" in run.execution_path
     assert "end_success" in run.execution_path
-
-
-def _concurrent_branch_workflow(*, fail_path_b: bool = False) -> WorkflowDef:
-    """
-    a -> branch(concurrent=True) -> path_a(c) -> end_a
-                                  -> path_b(d) -> end_b
-
-    Both edges match when context has score > 0 and score < 100.
-    """
-    return WorkflowDef(
-        id="test-concurrent",
-        name="Concurrent Branch Test",
-        start_node_id="a",
-        nodes={
-            "a": ThirdPartyNodeDef(
-                id="a",
-                type="third_party",
-                label="Fetch Data",
-                config=ThirdPartyConfig(
-                    url="https://example.com/a",
-                    method="POST",
-                    mock=MockConfig(status=200, body={"score": 50}),
-                ),
-                next="branch",
-            ),
-            "branch": BranchNodeDef(
-                id="branch",
-                type="branch",
-                label="Check Score",
-                concurrent=True,
-                edges=[
-                    BranchEdge(
-                        label="path_a",
-                        condition=BranchCondition(
-                            field="nodes.a.response.score",
-                            operator=Operator.GT,
-                            value=0,
-                        ),
-                        next="c",
-                    ),
-                    BranchEdge(
-                        label="path_b",
-                        condition=BranchCondition(
-                            field="nodes.a.response.score",
-                            operator=Operator.LT,
-                            value=100,
-                        ),
-                        next="d",
-                    ),
-                ],
-            ),
-            "c": ThirdPartyNodeDef(
-                id="c",
-                type="third_party",
-                label="Path A Work",
-                config=ThirdPartyConfig(
-                    url="https://example.com/c",
-                    method="POST",
-                    mock=MockConfig(status=200, body={"path": "a_done"}),
-                ),
-                next="end_a",
-            ),
-            "d": ThirdPartyNodeDef(
-                id="d",
-                type="third_party",
-                label="Path B Work",
-                config=ThirdPartyConfig(
-                    url="https://example.com/d",
-                    method="POST",
-                    mock=None if fail_path_b else MockConfig(status=200, body={"path": "b_done"}),
-                    retry=RetryConfig(max_attempts=1, backoff_ms=0) if fail_path_b else RetryConfig(),
-                ),
-                next="end_b",
-            ),
-            "end_a": EndNodeDef(id="end_a", type="end", label="End A"),
-            "end_b": EndNodeDef(id="end_b", type="end", label="End B"),
-        },
-    )
-
-
-async def test_concurrent_branch_all_succeed():
-    """Both concurrent paths complete successfully."""
-    workflow = _concurrent_branch_workflow()
-    run = await execute_workflow(workflow, sandbox_mode=True)
-
-    assert run.status == RunStatus.COMPLETED
-    assert run.node_runs["branch"].branch_taken == "path_a,path_b"
-    assert "c" in run.node_runs
-    assert "d" in run.node_runs
-    assert run.node_runs["c"].status == NodeStatus.SUCCESS
-    assert run.node_runs["d"].status == NodeStatus.SUCCESS
-    assert "end_a" in run.node_runs
-    assert "end_b" in run.node_runs
-    assert "c" in run.execution_path
-    assert "d" in run.execution_path
-
-
-@respx.mock
-async def test_concurrent_branch_one_fails():
-    """One concurrent path fails; run status is FAILED but both paths execute."""
-    respx.post("https://example.com/d").mock(return_value=Response(500))
-    workflow = _concurrent_branch_workflow(fail_path_b=True)
-    run = await execute_workflow(workflow, sandbox_mode=True)
-
-    assert run.status == RunStatus.FAILED
-    # Path A should still have completed
-    assert "c" in run.node_runs
-    assert run.node_runs["c"].status == NodeStatus.SUCCESS
-    # Path B node ran but failed
-    assert "d" in run.node_runs
-    assert run.node_runs["d"].status == NodeStatus.FAILED
-
-
-async def test_concurrent_branch_single_match():
-    """Only one edge matches with concurrent=True; behaves like non-concurrent."""
-    workflow = _concurrent_branch_workflow()
-    # Set score to 200 so only path_b (score < 100) does NOT match,
-    # but path_a (score > 0) still matches → single match
-    a_node = workflow.nodes["a"]
-    assert isinstance(a_node, ThirdPartyNodeDef)
-    a_node.config.mock = MockConfig(status=200, body={"score": 200})
-
-    run = await execute_workflow(workflow, sandbox_mode=True)
-
-    assert run.status == RunStatus.COMPLETED
-    assert run.node_runs["branch"].branch_taken == "path_a"
-    assert "c" in run.node_runs
-    assert run.node_runs["c"].status == NodeStatus.SUCCESS
-    # path_b should not have been taken
-    assert "d" not in run.node_runs
