@@ -54,6 +54,43 @@ async def execute_workflow(
     return run
 
 
+async def resume_workflow(
+    workflow: WorkflowDef,
+    run: WorkflowRun,
+) -> WorkflowRun:
+    """Resume a failed workflow run from the last successful node."""
+    if run.status != RunStatus.FAILED:
+        raise ValueError(f"Can only resume failed runs, got status '{run.status.value}'")
+
+    # Remove FAILED node entries so they get re-executed
+    failed_node_ids = [
+        nid for nid, nr in run.node_runs.items() if nr.status == NodeStatus.FAILED
+    ]
+    for nid in failed_node_ids:
+        del run.node_runs[nid]
+        if nid in run.execution_path:
+            run.execution_path.remove(nid)
+
+    run.status = RunStatus.RUNNING
+    run.completed_at = None
+
+    logger.info(
+        "workflow_resumed",
+        extra={"run_id": run.run_id, "workflow_id": workflow.id, "skipping": list(run.node_runs.keys())},
+    )
+
+    try:
+        await _execute_node(workflow, run, workflow.start_node_id, run.sandbox_mode)
+        if run.status != RunStatus.FAILED:
+            run.status = RunStatus.COMPLETED
+    except Exception as exc:
+        run.status = RunStatus.FAILED
+        logger.error("workflow_resume_error", extra={"run_id": run.run_id, "error": str(exc)})
+
+    run.completed_at = datetime.now(timezone.utc).isoformat()
+    return run
+
+
 async def _execute_node(
     workflow: WorkflowDef,
     run: WorkflowRun,
@@ -61,13 +98,26 @@ async def _execute_node(
     sandbox_mode: bool,
 ) -> None:
     """Recursively execute a node and its successors."""
-    if node_id in run.node_runs:
-        return
-
     if node_id not in workflow.nodes:
         raise ValueError(f"Node '{node_id}' not found in workflow")
 
     node_def = workflow.nodes[node_id]
+
+    # Skip nodes that already succeeded (supports resume) — but still follow edges
+    existing = run.node_runs.get(node_id)
+    if existing is not None and existing.status == NodeStatus.SUCCESS:
+        if isinstance(node_def, ThirdPartyNodeDef):
+            await _execute_node(workflow, run, node_def.next, sandbox_mode)
+        elif isinstance(node_def, BranchNodeDef) and existing.branch_taken:
+            # Re-follow the same branch edge that was taken before
+            for edge in node_def.edges:
+                if edge.label == existing.branch_taken:
+                    await _execute_node(workflow, run, edge.next, sandbox_mode)
+                    return
+            if node_def.default_next and existing.branch_taken == "default":
+                await _execute_node(workflow, run, node_def.default_next, sandbox_mode)
+        return
+
     run.execution_path.append(node_id)
 
     if isinstance(node_def, ThirdPartyNodeDef):

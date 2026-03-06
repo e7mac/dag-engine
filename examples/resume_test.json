@@ -1,0 +1,90 @@
+{
+  "id": "resume-test",
+  "name": "Resume Test Pipeline",
+  "version": 1,
+  "start_node_id": "fetch_user",
+  "nodes": {
+    "fetch_user": {
+      "id": "fetch_user",
+      "type": "third_party",
+      "label": "Fetch User",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/users/{{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": { "max_attempts": 2, "backoff_ms": 1000 },
+        "mock": {
+          "status": 200,
+          "body": {
+            "id": 1,
+            "name": "Leanne Graham",
+            "email": "leanne@example.com"
+          }
+        }
+      },
+      "next": "enrich_profile"
+    },
+    "enrich_profile": {
+      "id": "enrich_profile",
+      "type": "third_party",
+      "label": "Enrich Profile (Flaky)",
+      "config": {
+        "url": "http://localhost:8000/test/flaky?fail_count=1",
+        "method": "GET",
+        "timeout_ms": 5000,
+        "retry": { "max_attempts": 1, "backoff_ms": 0 },
+        "mock": {
+          "status": 200,
+          "body": { "risk_score": 12, "tier": "premium" }
+        }
+      },
+      "next": "check_tier"
+    },
+    "check_tier": {
+      "id": "check_tier",
+      "type": "branch",
+      "label": "Premium User?",
+      "edges": [
+        {
+          "label": "premium",
+          "condition": {
+            "field": "nodes.enrich_profile.response.tier",
+            "operator": "equals",
+            "value": "premium"
+          },
+          "next": "fetch_rewards"
+        }
+      ],
+      "default_next": "end_basic"
+    },
+    "fetch_rewards": {
+      "id": "fetch_rewards",
+      "type": "third_party",
+      "label": "Fetch Rewards",
+      "config": {
+        "url": "https://jsonplaceholder.typicode.com/posts?userId={{context.user_id}}",
+        "method": "GET",
+        "timeout_ms": 10000,
+        "retry": { "max_attempts": 2, "backoff_ms": 1000 },
+        "mock": {
+          "status": 200,
+          "body": [
+            { "id": 1, "reward": "10% discount" },
+            { "id": 2, "reward": "Free shipping" }
+          ]
+        }
+      },
+      "next": "end_premium"
+    },
+    "end_premium": {
+      "id": "end_premium",
+      "type": "end",
+      "label": "Premium Complete"
+    },
+    "end_basic": {
+      "id": "end_basic",
+      "type": "end",
+      "label": "Basic Complete"
+    }
+  }
+}

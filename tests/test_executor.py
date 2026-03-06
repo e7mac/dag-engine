@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from src.engine.executor import execute_workflow
+from src.engine.executor import execute_workflow, resume_workflow
 from src.types import (
     BranchCondition,
     BranchEdge,
@@ -13,6 +13,7 @@ from src.types import (
     MockConfig,
     NodeStatus,
     Operator,
+    RetryConfig,
     RunStatus,
     ThirdPartyConfig,
     ThirdPartyNodeDef,
@@ -231,3 +232,100 @@ async def test_email_validation_example():
     assert run.node_runs["risk_level"].branch_taken == "low"
     assert "send_welcome" in run.execution_path
     assert "end_success" in run.execution_path
+
+
+def _resumable_workflow() -> WorkflowDef:
+    """A -> B -> end. B has no mock so it fails on first run."""
+    return WorkflowDef(
+        id="test-resume",
+        name="Resume Test",
+        start_node_id="a",
+        nodes={
+            "a": ThirdPartyNodeDef(
+                id="a",
+                type="third_party",
+                label="Step A",
+                config=ThirdPartyConfig(
+                    url="https://example.com/a",
+                    method="POST",
+                    mock=MockConfig(status=200, body={"result": "ok"}),
+                ),
+                next="b",
+            ),
+            "b": ThirdPartyNodeDef(
+                id="b",
+                type="third_party",
+                label="Step B",
+                config=ThirdPartyConfig(
+                    url="http://localhost:1/will-fail",
+                    method="POST",
+                    mock=None,
+                    retry=RetryConfig(max_attempts=1, backoff_ms=0),
+                    timeout_ms=100,
+                ),
+                next="end",
+            ),
+            "end": EndNodeDef(id="end", type="end", label="Done"),
+        },
+    )
+
+
+async def test_resume_skips_successful_nodes():
+    """Node A succeeds, node B fails. After fixing B's mock and resuming,
+    node A is not re-executed and B + end complete successfully."""
+    workflow = _resumable_workflow()
+
+    # First run — node B fails (no mock, unreachable URL)
+    run = await execute_workflow(workflow, sandbox_mode=True)
+    assert run.status == RunStatus.FAILED
+    assert run.node_runs["a"].status == NodeStatus.SUCCESS
+    assert run.node_runs["b"].status == NodeStatus.FAILED
+
+    # Record node A's original completed_at to verify it wasn't re-executed
+    a_completed_at = run.node_runs["a"].completed_at
+
+    # Fix node B by adding a mock
+    b_node = workflow.nodes["b"]
+    assert isinstance(b_node, ThirdPartyNodeDef)
+    b_node.config.mock = MockConfig(status=200, body={"fixed": True})
+
+    # Resume the failed run
+    resumed = await resume_workflow(workflow, run)
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.node_runs["a"].completed_at == a_completed_at  # Not re-executed
+    assert resumed.node_runs["b"].status == NodeStatus.SUCCESS
+    assert resumed.node_runs["b"].output == {"status": 200, "body": {"fixed": True}}
+    assert resumed.node_runs["end"].status == NodeStatus.SUCCESS
+
+
+async def test_resume_rejects_non_failed_run():
+    """Resuming a completed run should raise ValueError."""
+    workflow = _simple_workflow()
+    run = await execute_workflow(workflow, sandbox_mode=True)
+    assert run.status == RunStatus.COMPLETED
+
+    with pytest.raises(ValueError, match="Can only resume failed runs"):
+        await resume_workflow(workflow, run)
+
+
+async def test_resume_preserves_context():
+    """Resumed run keeps context from successful nodes so downstream
+    template references still work."""
+    workflow = _resumable_workflow()
+
+    # First run — A succeeds and writes to context, B fails
+    run = await execute_workflow(workflow, sandbox_mode=True)
+    assert run.status == RunStatus.FAILED
+    assert run.context["nodes"]["a"]["response"] == {"result": "ok"}
+
+    # Fix B and resume
+    b_node = workflow.nodes["b"]
+    assert isinstance(b_node, ThirdPartyNodeDef)
+    b_node.config.mock = MockConfig(status=200, body={"fixed": True})
+
+    resumed = await resume_workflow(workflow, run)
+    assert resumed.status == RunStatus.COMPLETED
+    # Context from node A still present
+    assert resumed.context["nodes"]["a"]["response"] == {"result": "ok"}
+    # Context from node B now present too
+    assert resumed.context["nodes"]["b"]["response"] == {"fixed": True}

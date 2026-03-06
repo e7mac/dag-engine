@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.engine.executor import execute_workflow
+from src.engine.executor import execute_workflow, resume_workflow
 from src.store.run_store import RunStore
 from src.types import WorkflowDef, WorkflowRun
 from src.validation.dag_validator import validate_workflow
@@ -130,6 +130,41 @@ async def run_workflow(
                 _metrics["retries_total"] += node_run.attempts - 1
 
     background_tasks.add_task(_run)
+    return RunResponse(run_id=run_id)
+
+
+@app.post("/runs/{run_id}/resume")
+async def resume_run(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+) -> RunResponse:
+    run = _run_store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if run.status.value != "failed":
+        raise HTTPException(status_code=400, detail=f"Can only resume failed runs, got '{run.status.value}'")
+
+    workflow = _workflows.get(run.workflow_id)
+    if workflow is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Workflow '{run.workflow_id}' no longer registered",
+        )
+
+    async def _resume() -> None:
+        await resume_workflow(workflow, run)
+        _run_store.save(run)
+
+        # Update metrics
+        for node_run in run.node_runs.values():
+            if node_run.status.value == "success":
+                _metrics["nodes_succeeded"] += 1
+            elif node_run.status.value == "failed":
+                _metrics["nodes_failed"] += 1
+            if node_run.attempts > 1:
+                _metrics["retries_total"] += node_run.attempts - 1
+
+    background_tasks.add_task(_resume)
     return RunResponse(run_id=run_id)
 
 
