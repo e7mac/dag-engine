@@ -329,3 +329,30 @@ async def test_resume_preserves_context():
     assert resumed.context["nodes"]["a"]["response"] == {"result": "ok"}
     # Context from node B now present too
     assert resumed.context["nodes"]["b"]["response"] == {"fixed": True}
+
+
+async def test_execute_workflow_uses_provided_run_id():
+    """When run_id is passed to execute_workflow, the returned run uses it."""
+    workflow = _simple_workflow()
+    custom_id = "custom-run-id-123"
+    run = await execute_workflow(workflow, sandbox_mode=True, run_id=custom_id)
+    assert run.run_id == custom_id
+    assert run.status == RunStatus.COMPLETED
+
+
+async def test_resume_preserves_run_id():
+    """After resume, the run_id remains the same as the original run."""
+    workflow = _resumable_workflow()
+    custom_id = "resume-keeps-this-id"
+    run = await execute_workflow(workflow, sandbox_mode=True, run_id=custom_id)
+    assert run.status == RunStatus.FAILED
+    assert run.run_id == custom_id
+
+    # Fix B and resume
+    b_node = workflow.nodes["b"]
+    assert isinstance(b_node, ThirdPartyNodeDef)
+    b_node.config.mock = MockConfig(status=200, body={"fixed": True})
+
+    resumed = await resume_workflow(workflow, run)
+    assert resumed.status == RunStatus.COMPLETED
+    assert resumed.run_id == custom_id

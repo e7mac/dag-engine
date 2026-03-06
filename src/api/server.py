@@ -115,9 +115,8 @@ async def run_workflow(
             workflow,
             initial_context=request.initial_context,
             sandbox_mode=request.sandbox_mode,
+            run_id=run_id,
         )
-        # Overwrite the auto-generated run_id so we can track it
-        run.run_id = run_id
         _run_store.save(run)
 
         # Update metrics
@@ -151,12 +150,17 @@ async def resume_run(
             detail=f"Workflow '{run.workflow_id}' no longer registered",
         )
 
+    # Snapshot existing node_ids so we only count new ones after resume
+    existing_node_ids = set(run.node_runs.keys())
+
     async def _resume() -> None:
         await resume_workflow(workflow, run)
         _run_store.save(run)
 
-        # Update metrics
-        for node_run in run.node_runs.values():
+        # Update metrics only for newly executed nodes
+        for nid, node_run in run.node_runs.items():
+            if nid in existing_node_ids:
+                continue
             if node_run.status.value == "success":
                 _metrics["nodes_succeeded"] += 1
             elif node_run.status.value == "failed":

@@ -25,10 +25,11 @@ async def execute_workflow(
     workflow: WorkflowDef,
     initial_context: dict[str, Any] | None = None,
     sandbox_mode: bool = False,
+    run_id: str | None = None,
 ) -> WorkflowRun:
     """Execute a workflow DAG from start to end."""
     run = WorkflowRun(
-        run_id=str(uuid.uuid4()),
+        run_id=run_id or str(uuid.uuid4()),
         workflow_id=workflow.id,
         status=RunStatus.RUNNING,
         started_at=datetime.now(timezone.utc).isoformat(),
