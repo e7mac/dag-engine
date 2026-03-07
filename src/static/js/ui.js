@@ -25,8 +25,10 @@ const UI = {
 
   openRunModal(live = false) {
     if (!State.selectedWorkflowId) return;
+
     document.getElementById('run-sandbox').checked = !live;
-    document.getElementById('run-context').value = document.getElementById('context-input').value;
+    document.getElementById('run-context').value =
+      document.getElementById('context-input').value;
     document.getElementById('run-error').style.display = 'none';
     document.getElementById('run-modal').style.display = 'flex';
   },
@@ -34,6 +36,7 @@ const UI = {
   toggleDetail(id) {
     const el = document.getElementById(id);
     const toggle = el.previousElementSibling;
+
     if (el.style.display === 'none') {
       el.style.display = 'block';
       toggle.textContent = 'Hide details';
@@ -45,10 +48,14 @@ const UI = {
 
   toggleStats() {
     State.statsVisible = !State.statsVisible;
+
     const panel = document.getElementById('stats-panel');
     const btn = document.getElementById('stats-toggle');
     panel.classList.toggle('visible', State.statsVisible);
     btn.classList.toggle('active', State.statsVisible);
-    if (State.statsVisible) API.fetchStats();
+
+    if (State.statsVisible) {
+      API.fetchStats();
+    }
   },
 };

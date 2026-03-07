@@ -1,3 +1,4 @@
+// Redraw DAG on window resize
 window.addEventListener('resize', () => {
   if (State.lastDAGArgs.wf) {
     DAG.draw(State.lastDAGArgs.wf, State.lastDAGArgs.trace);
@@ -6,5 +7,6 @@ window.addEventListener('resize', () => {
   }
 });
 
+// Load initial data
 API.fetchWorkflows();
 API.fetchRuns();

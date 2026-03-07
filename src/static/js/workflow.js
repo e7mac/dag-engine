@@ -2,21 +2,30 @@ const Workflow = {
   extractContextVars(wf) {
     const vars = new Set();
     const re = /\{\{context\.([^}]+)\}\}/g;
-    JSON.stringify(wf).replace(re, (_, v) => { vars.add(v.trim()); });
+
+    JSON.stringify(wf).replace(re, (_, v) => {
+      vars.add(v.trim());
+    });
+
     return [...vars];
   },
 
   buildDefaultContext(wf) {
     const vars = Workflow.extractContextVars(wf);
     if (vars.length === 0) return '{}';
+
     const obj = {};
-    vars.forEach(v => { obj[v] = 'example_' + v; });
+    vars.forEach(v => {
+      obj[v] = 'example_' + v;
+    });
+
     return JSON.stringify(obj, null, 2);
   },
 
   async register() {
     const textarea = document.getElementById('register-json');
     const errEl = document.getElementById('register-error');
+
     let json;
     try {
       json = JSON.parse(textarea.value);
@@ -25,9 +34,14 @@ const Workflow = {
       errEl.style.display = 'block';
       return;
     }
+
     try {
-      const wf = await API.fetch('/workflows', { method: 'POST', body: JSON.stringify(json) });
+      const wf = await API.fetch('/workflows', {
+        method: 'POST',
+        body: JSON.stringify(json),
+      });
       State.workflows[wf.id] = wf;
+
       UI.closeModal('register-modal');
       Sidebar.renderWorkflowList();
       Sidebar.selectWorkflow(wf.id);
@@ -40,9 +54,14 @@ const Workflow = {
 
   async loadExample(name) {
     const json = EXAMPLES[name];
+
     try {
-      const wf = await API.fetch('/workflows', { method: 'POST', body: JSON.stringify(json) });
+      const wf = await API.fetch('/workflows', {
+        method: 'POST',
+        body: JSON.stringify(json),
+      });
       State.workflows[wf.id] = wf;
+
       Sidebar.renderWorkflowList();
       Sidebar.selectWorkflow(wf.id);
       UI.toast(`Loaded ${json.name}`, 'success');
@@ -53,15 +72,24 @@ const Workflow = {
 
   async validate() {
     if (!State.selectedWorkflowId) return;
+
     try {
-      const result = await API.fetch(`/workflows/${State.selectedWorkflowId}/validate`, { method: 'POST' });
+      const result = await API.fetch(
+        `/workflows/${State.selectedWorkflowId}/validate`,
+        { method: 'POST' }
+      );
+
       const box = document.getElementById('validation-box');
       if (result.valid) {
         box.innerHTML = '<div class="validation-result valid">Valid DAG</div>';
       } else {
-        box.innerHTML = `<div class="validation-result invalid">
-          Invalid:<ul>${result.errors.map(e => '<li>' + UI.esc(e) + '</li>').join('')}</ul>
-        </div>`;
+        const errorList = result.errors
+          .map(e => '<li>' + UI.esc(e) + '</li>')
+          .join('');
+        box.innerHTML =
+          '<div class="validation-result invalid">' +
+            `Invalid:<ul>${errorList}</ul>` +
+          '</div>';
       }
     } catch (e) {
       UI.toast(e.message, 'error');
