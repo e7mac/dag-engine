@@ -17,6 +17,17 @@ pytest tests/ -v
 
 Open `http://localhost:8000` for the dashboard.
 
+## Quick start — run a workflow from the dashboard
+
+1. Start the server: `uvicorn src.main:app --reload`
+2. Open `http://localhost:8000` in your browser
+3. Click **Load User Lookup** in the header bar
+4. The DAG canvas shows the workflow graph; the sidebar selects it automatically
+5. The context editor (right panel) pre-fills with `{"user_id": 4}`
+6. Click **Run Live** in the toolbar — this makes real HTTP calls to JSONPlaceholder
+7. The run appears in the sidebar; once it finishes, the trace panel shows each node's status, timing, and response data
+8. Hover over a trace node to highlight it on the DAG canvas
+
 ## Architecture
 
 ```
@@ -38,7 +49,18 @@ src/
 ├── api/
 │   └── server.py            # FastAPI REST API + metrics + stats
 └── static/
-    └── index.html           # Single-file web dashboard (all CSS/JS inlined)
+    ├── index.html           # HTML shell — structure + script/link tags
+    ├── styles.css           # All CSS with section comments
+    └── js/
+        ├── state.js         # State object + EXAMPLES data
+        ├── api.js           # HTTP layer (fetch, fetchWorkflows, fetchRuns, fetchStats)
+        ├── ui.js            # Toast, escape, modals, toggleDetail, toggleStats
+        ├── sidebar.js       # Workflow list, run list, selectWorkflow, selectRun
+        ├── workflow.js      # Register, validate, loadExample, context helpers
+        ├── runner.js        # Execute, poll, resume
+        ├── trace.js         # Render trace, clear, renderStats
+        ├── dag.js           # Canvas DAG rendering
+        └── init.js          # Window resize handler + startup fetches
 ```
 
 ### How it works
@@ -87,14 +109,14 @@ URLs and request bodies support `{{context.path}}` placeholders:
 
 ## Dashboard
 
-The web dashboard at `http://localhost:8000` is a single HTML file with no build step. Features:
+The web dashboard at `http://localhost:8000` is a set of static files (no build step). Features:
 
 - **Workflow list** — sidebar showing registered workflows
 - **DAG canvas** — visual graph drawn on `<canvas>` with topological layering; edges highlight blue when taken during a run
 - **Run management** — trigger runs (sandbox or live), view run list with status badges
 - **Execution trace** — vertical timeline per node showing status, duration, start timestamp; expandable details with full input/output/error/timing JSON
 - **Hover highlighting** — hovering a trace node highlights it on the DAG canvas with a blue glow
-- **Example workflows** — 4 built-in examples loadable via buttons (Order Fulfillment, Email Validation, User Lookup, Fault Tolerance)
+- **Example workflows** — 5 built-in examples loadable via buttons (Order Fulfillment, Email Validation, User Lookup, Fault Tolerance, Resume Test)
 - **Stats panel** — toggleable overlay with run counts, success rates, latency percentiles, per-workflow breakdown
 
 ## Sandbox mode vs Live mode
@@ -146,6 +168,7 @@ curl http://localhost:8000/runs/<run_id>/trace
 | Email Validation | `examples/email_validation.json` | Validate email → check IP risk → route by risk level (low/medium/high) |
 | User Lookup | `examples/user_lookup.json` | Fetch user + posts from JSONPlaceholder → branch on activity |
 | Fault Tolerance | `examples/fault_tolerance.json` | Hit a flaky endpoint that fails 2x then recovers (tests retry) |
+| Resume Test | `examples/resume_test.json` | Fetch user → flaky enrichment → branch on tier → fetch rewards (tests resume from failure) |
 
 ## Persistence
 
@@ -159,14 +182,14 @@ Writes to `runs/{run_id}.json`. Note: these are not reloaded on restart (write-o
 
 ## Tests
 
-37 tests across 4 files:
+45 tests across 4 files:
 
 | File | Count | Covers |
 |------|-------|--------|
 | `test_branch.py` | 17 | All operators, dot-path resolution, first-match semantics |
-| `test_executor.py` | 7 | Happy path, branching, sandbox mocks, context passing, example workflows |
+| `test_executor.py` | 10 | Happy path, branching, sandbox mocks, context passing, example workflows, resume |
 | `test_retry.py` | 6 | Immediate success, retry on Nth attempt, exhaustion, callback, backoff timing |
-| `test_validation.py` | 7 | Missing start node, broken refs, unreachable nodes, cycles, unterminated paths |
+| `test_validation.py` | 12 | Missing start node, broken refs, unreachable nodes, cycles, unterminated paths, templates |
 
 ```bash
 pytest tests/ -v

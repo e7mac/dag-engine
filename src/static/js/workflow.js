@@ -16,7 +16,7 @@ const Workflow = {
 
     const obj = {};
     vars.forEach(v => {
-      obj[v] = 'example_' + v;
+      obj[v] = v === 'user_id' ? 4 : 'example_' + v;
     });
 
     return JSON.stringify(obj, null, 2);
